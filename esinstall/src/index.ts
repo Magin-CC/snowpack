@@ -32,7 +32,6 @@ import {
   getWebDependencyName,
   getWebDependencyType,
   isJavaScript,
-  isPackageAliasEntry,
   MISSING_PLUGIN_SUGGESTIONS,
   sanitizePackageName,
   writeLockfile,
@@ -46,6 +45,7 @@ export {
   resolveEntrypoint,
   explodeExportMap,
 } from './entrypoints';
+export {resolveDependencyManifest} from './util';
 export {printStats} from './stats';
 
 type DependencyLoc = {
@@ -107,14 +107,17 @@ function generateEnvObject(userEnv: EnvVarReplacements): Object {
 }
 
 function generateReplacements(env: Object): {[key: string]: string} {
-  return Object.keys(env).reduce((acc, key) => {
-    acc[`process.env.${key}`] = JSON.stringify(env[key]);
-    return acc;
-  }, {
-    // Other find & replacements:
-    // tslib: fights with Rollup's namespace/default handling, so just remove it.
-    'return (mod && mod.__esModule) ? mod : { "default": mod };': 'return mod;'
-  });
+  return Object.keys(env).reduce(
+    (acc, key) => {
+      acc[`process.env.${key}`] = JSON.stringify(env[key]);
+      return acc;
+    },
+    {
+      // Other find & replacements:
+      // tslib: fights with Rollup's namespace/default handling, so just remove it.
+      'return (mod && mod.__esModule) ? mod : { "default": mod };': 'return mod;',
+    },
+  );
 }
 
 interface InstallOptions {
@@ -129,7 +132,7 @@ interface InstallOptions {
   polyfillNode: boolean;
   sourcemap?: boolean | 'inline';
   external: string[];
-  externalEsm: string[];
+  externalEsm: string[] | ((imp: string) => boolean);
   packageLookupFields: string[];
   packageExportLookupFields: string[];
   namedExports: string[];
@@ -170,8 +173,8 @@ function setOptionDefaults(_options: PublicInstallOptions): InstallOptions {
       error: console.error,
     },
     dest: 'web_modules',
-    external: [],
-    externalEsm: [],
+    external: [] as string[],
+    externalEsm: [] as string[],
     polyfillNode: false,
     packageLookupFields: [],
     packageExportLookupFields: [],
@@ -315,13 +318,11 @@ ${colors.dim(
       rollupPluginAlias({
         entries: [
           // Apply all aliases
-          ...Object.entries(installAlias)
-            .filter(([, val]) => isPackageAliasEntry(val))
-            .map(([key, val]) => ({
-              find: key,
-              replacement: val,
-              exact: false,
-            })),
+          ...Object.entries(installAlias).map(([key, val]) => ({
+            find: key,
+            replacement: val,
+            exact: false,
+          })),
           // Make sure that internal imports also honor any resolved installEntrypoints
           ...Object.entries(installEntrypoints).map(([key, val]) => ({
             find: key,
@@ -350,7 +351,11 @@ ${colors.dim(
       rollupPluginReplace(generateReplacements(env)),
       rollupPluginCommonjs({
         extensions: ['.js', '.cjs'],
-        esmExternals: (id) => externalEsm.some((packageName) => isImportOfPackage(id, packageName)),
+        esmExternals: (id) =>
+          !namedExports.some((packageName) => isImportOfPackage(id, packageName)) &&
+          Array.isArray(externalEsm)
+            ? externalEsm.some((packageName) => isImportOfPackage(id, packageName))
+            : (externalEsm as Function)(id),
         requireReturnsDefault: 'auto',
       } as RollupCommonJSOptions),
       rollupPluginWrapInstallTargets(!!isTreeshake, autoDetectNamedExports, installTargets, logger),

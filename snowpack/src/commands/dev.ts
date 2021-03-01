@@ -34,7 +34,13 @@ import {
   ServerRuntime,
   SnowpackDevServer,
 } from '../types';
-import {hasExtension, HMR_CLIENT_CODE, HMR_OVERLAY_CODE, openInBrowser} from '../util';
+import {
+  hasExtension,
+  HMR_CLIENT_CODE,
+  HMR_OVERLAY_CODE,
+  isFsEventsEnabled,
+  openInBrowser,
+} from '../util';
 import {getPort, paintDashboard, paintEvent} from './paint';
 
 export class OneToManyMap {
@@ -473,7 +479,7 @@ export async function startServer(
     if (reqPath.startsWith(PACKAGE_LINK_PATH_PREFIX)) {
       const symlinkResourceUrl = reqPath.substr(PACKAGE_LINK_PATH_PREFIX.length);
       const symlinkResourceLoc = path.resolve(
-        config.root,
+        config.workspaceRoot!,
         process.platform === 'win32' ? symlinkResourceUrl.replace(/\//g, '\\') : symlinkResourceUrl,
       );
       const symlinkResourceDirectory = path.dirname(symlinkResourceLoc);
@@ -503,7 +509,7 @@ export async function startServer(
               path.posix.join(
                 config.buildOptions.metaUrlPath,
                 'link',
-                slash(path.relative(config.root, u)),
+                slash(path.relative(config.workspaceRoot!, u)),
               ),
             ),
           );
@@ -627,7 +633,10 @@ export async function startServer(
   const knownETags = new Map<string, string>();
 
   function matchRoute(reqUrl: string): RouteConfigObject | null {
-    let reqPath = decodeURI(url.parse(reqUrl).pathname!);
+    if (reqUrl.startsWith(config.buildOptions.metaUrlPath)) {
+      return null;
+    }
+    const reqPath = decodeURI(url.parse(reqUrl).pathname!);
     const reqExt = path.extname(reqPath);
     const isRoute = !reqExt || reqExt.toLowerCase() === '.html';
     for (const route of config.routes) {

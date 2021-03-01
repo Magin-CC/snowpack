@@ -242,6 +242,7 @@ export interface PackageSourceRemote {
 // interface this library uses internally
 export interface SnowpackConfig {
   root: string;
+  workspaceRoot?: string;
   extends?: string;
   exclude: string[];
   mount: Record<string, MountEntry>;
@@ -288,6 +289,7 @@ export interface SnowpackConfig {
 
 export type SnowpackUserConfig = {
   root?: string;
+  workspaceRoot?: string;
   install?: string[];
   extends?: string;
   exclude?: string[];
@@ -359,7 +361,12 @@ export interface PackageSource {
     options: {config: SnowpackConfig; lockfile: LockfileManifest | null},
   ): Promise<undefined | {contents: Buffer | string; imports: InstallTarget[]}>;
   /** Resolve a package import to URL (ex: "react" -> "/pkg/react") */
-  resolvePackageImport(source: string, spec: string, config: SnowpackConfig): Promise<string>;
+  resolvePackageImport(
+    source: string,
+    spec: string,
+    config: SnowpackConfig,
+    importMap?: ImportMap,
+  ): Promise<string>;
   /** Modify the build install config for optimized build install. */
   modifyBuildInstallOptions(options: {
     installOptions: EsinstallOptions;

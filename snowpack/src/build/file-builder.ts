@@ -18,7 +18,13 @@ import {
   SnowpackBuiltFile,
   SnowpackConfig,
 } from '../types';
-import {createInstallTarget, isRemoteUrl, relativeURL, replaceExtension} from '../util';
+import {
+  createInstallTarget,
+  isRemoteUrl,
+  relativeURL,
+  removeLeadingSlash,
+  replaceExtension,
+} from '../util';
 import {
   getMetaUrlPath,
   SRI_CLIENT_HMR_SNOWPACK,
@@ -71,7 +77,11 @@ export class FileBuilder {
     this.isSSR = isSSR;
     this.config = config;
     this.hmrEngine = hmrEngine || null;
-    this.urls = getUrlsForFile(loc, config);
+    const urls = getUrlsForFile(loc, config);
+    if (!urls) {
+      throw new Error(`No mounted URLs configured for file: ${loc}`);
+    }
+    this.urls = urls;
   }
 
   private verifyRequestFromBuild(type: string): SnowpackBuiltFile {
@@ -122,22 +132,6 @@ export class FileBuilder {
         config: this.config,
       });
       const resolveImport = async (spec) => {
-        // Try to resolve the specifier to a known URL in the project
-        let resolvedImportUrl = resolveImportSpecifier(spec);
-        if (!isResolveBareImports) {
-          return resolvedImportUrl || spec;
-        }
-        // Handle a package import
-        if (!resolvedImportUrl && importMap) {
-          if (importMap.imports[spec]) {
-            const PACKAGE_PATH_PREFIX = path.posix.join(
-              this.config.buildOptions.metaUrlPath,
-              'pkg/',
-            );
-            return path.posix.join(PACKAGE_PATH_PREFIX, importMap.imports[spec]);
-          }
-          throw new Error(`Unexpected: spec ${spec} not included in import map.`);
-        }
         // Ignore packages marked as external
         if (this.config.packageOptions.external?.includes(spec)) {
           return spec;
@@ -145,8 +139,23 @@ export class FileBuilder {
         if (isRemoteUrl(spec)) {
           return spec;
         }
+        // Try to resolve the specifier to a known URL in the project
+        let resolvedImportUrl = resolveImportSpecifier(spec);
+        // Handle a package import
         if (!resolvedImportUrl) {
-          resolvedImportUrl = await pkgSource.resolvePackageImport(this.loc, spec, this.config);
+          try {
+            return await pkgSource.resolvePackageImport(
+              this.loc,
+              spec,
+              this.config,
+              importMap || (isResolveBareImports ? undefined : {imports: {}}),
+            );
+          } catch (err) {
+            if (!isResolveBareImports && /not included in import map./.test(err.message)) {
+              return spec;
+            }
+            throw err;
+          }
         }
         return resolvedImportUrl || spec;
       };
@@ -321,7 +330,7 @@ export class FileBuilder {
 
   async getProxy(_url: string, type: string) {
     const code = this.resolvedOutput[type].code;
-    const url = path.posix.join(this.isDev ? '/' : this.config.buildOptions.baseUrl, _url);
+    const url = this.isDev ? _url : this.config.buildOptions.baseUrl + removeLeadingSlash(_url);
     return await wrapImportProxy({url, code, hmr: this.isHMR, config: this.config});
   }
 

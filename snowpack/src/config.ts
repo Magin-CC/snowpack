@@ -399,7 +399,6 @@ function normalizeConfig(_config: SnowpackUserConfig): SnowpackConfig {
   config.exclude = Array.from(
     new Set([...ALWAYS_EXCLUDE, `${config.buildOptions.out}/**/*`, ...config.exclude]),
   );
-
   // normalize config URL/path values
   config.buildOptions.out = removeTrailingSlash(config.buildOptions.out);
   config.buildOptions.baseUrl = addTrailingSlash(config.buildOptions.baseUrl);
@@ -641,6 +640,9 @@ function resolveRelativeConfigMount(
 function resolveRelativeConfig(config: SnowpackUserConfig, configBase: string): SnowpackUserConfig {
   if (config.root) {
     config.root = path.resolve(configBase, config.root);
+  }
+  if (config.workspaceRoot) {
+    config.workspaceRoot = path.resolve(configBase, config.workspaceRoot);
   }
   if (config.buildOptions?.out) {
     config.buildOptions.out = path.resolve(configBase, config.buildOptions.out);

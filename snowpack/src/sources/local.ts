@@ -1,5 +1,10 @@
 import crypto from 'crypto';
-import {InstallOptions, InstallTarget, resolveEntrypoint} from 'esinstall';
+import {
+  InstallOptions,
+  InstallTarget,
+  resolveDependencyManifest as _resolveDependencyManifest,
+  resolveEntrypoint,
+} from 'esinstall';
 import projectCacheDir from 'find-cache-dir';
 import {existsSync, promises as fs} from 'fs';
 import PQueue from 'p-queue';
@@ -18,7 +23,13 @@ import {
   SnowpackConfig,
   PackageSourceLocal,
 } from '../types';
-import {createInstallTarget, GLOBAL_CACHE_DIR, isJavaScript, isRemoteUrl} from '../util';
+import {
+  createInstallTarget,
+  findMatchingAliasEntry,
+  GLOBAL_CACHE_DIR,
+  isJavaScript,
+  isRemoteUrl,
+} from '../util';
 import {installPackages} from './local-install';
 import findUp from 'find-up';
 
@@ -195,14 +206,7 @@ export default {
       return;
     }
     await Promise.all(
-      [
-        ...new Set(
-          installTargets
-            .map((t) => t.specifier)
-            // external packages need not prepare
-            .filter((t) => !config.packageOptions?.external.includes(t)),
-        ),
-      ].map((spec) => {
+      [...new Set(installTargets.map((t) => t.specifier))].map((spec) => {
         return this.resolvePackageImport(path.join(config.root, 'package.json'), spec, config);
       }),
     );
@@ -211,11 +215,26 @@ export default {
     return;
   },
 
-  async resolvePackageImport(source: string, spec: string, _config: SnowpackConfig) {
+  async resolvePackageImport(
+    source: string,
+    spec: string,
+    _config: SnowpackConfig,
+    importMap?: ImportMap,
+  ) {
     config = config || _config;
+
+    const aliasEntry = findMatchingAliasEntry(config, spec);
+    if (aliasEntry && aliasEntry.type === 'package') {
+      const {from, to} = aliasEntry;
+      spec = spec.replace(from, to);
+    }
+
     const entrypoint = resolveEntrypoint(spec, {
       cwd: path.dirname(source),
-      packageLookupFields: (_config.packageOptions as PackageSourceLocal).packageLookupFields || [],
+      packageLookupFields: [
+        'snowpack:source',
+        ...((_config.packageOptions as PackageSourceLocal).packageLookupFields || []),
+      ],
     });
     const specParts = spec.split('/');
     let _packageName: string = specParts.shift()!;
@@ -223,12 +242,21 @@ export default {
       _packageName += '/' + specParts.shift();
     }
     const isSymlink = !entrypoint.includes(path.join('node_modules', _packageName));
-    const isWithinRoot = entrypoint.startsWith(config.root);
-    if (isSymlink && isWithinRoot) {
+    const isWithinRoot = config.workspaceRoot && entrypoint.startsWith(config.workspaceRoot);
+    if (isSymlink && config.workspaceRoot && isWithinRoot) {
       const builtEntrypointUrls = getBuiltFileUrls(entrypoint, config);
-      const builtEntrypointUrl = slash(path.relative(config.root, builtEntrypointUrls[0]!));
+      const builtEntrypointUrl = slash(
+        path.relative(config.workspaceRoot, builtEntrypointUrls[0]!),
+      );
       allSymlinkImports[builtEntrypointUrl] = entrypoint;
       return path.posix.join(config.buildOptions.metaUrlPath, 'link', builtEntrypointUrl);
+    }
+
+    if (importMap) {
+      if (importMap.imports[spec]) {
+        return path.posix.join(config.buildOptions.metaUrlPath, 'pkg', importMap.imports[spec]);
+      }
+      throw new Error(`Unexpected: spec ${spec} not included in import map.`);
     }
 
     let rootPackageDirectory = getRootPackageDirectory(entrypoint);
@@ -272,17 +300,38 @@ export default {
           ...Object.keys(packageManifest.dependencies || {}),
           ...Object.keys(packageManifest.devDependencies || {}),
           ...Object.keys(packageManifest.peerDependencies || {}),
-        ];
+        ].filter((ext) => ext !== _packageName);
+
+        function getMemoizedResolveDependencyManifest() {
+          const results = {};
+          return (packageName: string) => {
+            results[packageName] =
+              results[packageName] ||
+              _resolveDependencyManifest(packageName, rootPackageDirectory!);
+            return results[packageName];
+          };
+        }
+        const resolveDependencyManifest = getMemoizedResolveDependencyManifest();
 
         const installOptions: InstallOptions = {
           dest: installDest,
           cwd: packageManifestLoc,
           env: {NODE_ENV: process.env.NODE_ENV || 'development'},
           treeshake: false,
-          external: externalPackages,
-          externalEsm: externalPackages,
           sourcemap: config.buildOptions.sourcemap,
           alias: config.alias,
+          external: externalPackages,
+          // ESM<>CJS Compatability: If we can detect that a dependency is common.js vs. ESM, then
+          // we can provide this hint to esinstall to improve our cross-package import support.
+          externalEsm: (imp) => {
+            const specParts = imp.split('/');
+            let _packageName: string = specParts.shift()!;
+            if (_packageName?.startsWith('@')) {
+              _packageName += '/' + specParts.shift();
+            }
+            const [, result] = resolveDependencyManifest(_packageName);
+            return !result || !!(result.module || result.exports);
+          },
         };
         if (config.packageOptions.source === 'local') {
           if (config.packageOptions.polyfillNode !== undefined) {
@@ -318,11 +367,11 @@ export default {
           logger.debug(colors.yellow(`⦿ ${spec} (ssr) DONE`));
         }
         if (isSymlink) {
-          logger.info(
+          logger.warn(
             colors.bold(`Locally linked package detected outside of project root.\n`) +
-              `Locally linked/symlinked packages are treated as static by default, and will not be\n` +
-              `rebuilt until its "package.json" version changes. To enable local updates for this\n` +
-              `package, set your project root to match your monorepo/workspace root directory.`,
+              `If you are working in a workspace/monorepo, set your snowpack.config.js "workspaceRoot"\n` +
+              `to the workspace directory to take advantage of fast HMR updates for linked packages.\n` +
+              `Otherwise, this package will be cached until its package.json "version" changes.`,
           );
         }
         const dependencyFileLoc = path.join(installDest, newImportMap.imports[spec]);
